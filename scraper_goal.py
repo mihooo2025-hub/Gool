@@ -104,6 +104,88 @@ def get_recent_article_links(window_hours: int = None) -> list:
     return sorted(found.values(), key=lambda x: x["minutes_ago"])
 
 
+# كلمات مفتاحية تدل على أن الصورة "عامة" (شعار، صورة مشاركة افتراضية، أيقونة...)
+# وليست صورة الخبر الفعلية - أي رابط يحتوي إحداها يُستبعد فوراً
+_GENERIC_IMAGE_MARKERS = (
+    "brand-logo",
+    "lcp-hack-background",
+    "logo",
+    "sprite",
+    "favicon",
+    "placeholder",
+    "default",
+    "avatar",
+    "app-icon",
+    "share-card",
+    "og-image",
+    "goal-logo",
+)
+
+
+def _is_generic_image(url: str) -> bool:
+    if not url:
+        return True
+    low = url.lower()
+    return any(marker in low for marker in _GENERIC_IMAGE_MARKERS)
+
+
+def _extract_featured_image(soup: BeautifulSoup, article_tag) -> str:
+    """
+    نظام استخراج من 3 مستويات لتفادي جلب صورة عامة مكررة (شعار الموقع أو
+    صورة مشاركة افتراضية) بدلاً من الصورة الفعلية للخبر:
+
+    المستوى 1: أول <img>/<picture> تقع داخل <figure> مباشرة بعد وسم <h1>
+               (هذا الموضع هيكلياً هو صورة الخبر البارزة في أغلب مواقع الأخبار).
+    المستوى 2: وسم og:image أو twitter:image في الميتاداتا، بشرط ألا تكون
+               ضمن القائمة السوداء للصور العامة.
+    المستوى 3: أول <img> داخل جسم المقال بعد استبعاد القائمة السوداء
+               والصور الصغيرة جداً (أيقونات/شعارات مصغّرة عبر width/height).
+    """
+    h1 = soup.find("h1")
+
+    # المستوى 1: صورة داخل figure تقع بعد h1 مباشرة في ترتيب المستند
+    if h1:
+        node = h1
+        steps = 0
+        while node is not None and steps < 40:
+            node = node.find_next(["figure", "picture", "img"])
+            steps += 1
+            if node is None:
+                break
+            if node.name in ("figure", "picture"):
+                img = node.find("img")
+            else:
+                img = node
+            if not img:
+                continue
+            src = img.get("src") or img.get("data-src") or img.get("data-original")
+            if src and not _is_generic_image(src):
+                return src
+
+    # المستوى 2: og:image / twitter:image (مع استبعاد الصور العامة)
+    for prop in ("og:image", "og:image:secure_url", "twitter:image"):
+        meta = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+        if meta and meta.get("content") and not _is_generic_image(meta["content"]):
+            return meta["content"]
+
+    # المستوى 3: أول صورة "حقيقية" داخل جسم المقال
+    if article_tag:
+        for img in article_tag.find_all("img"):
+            src = img.get("src") or img.get("data-src") or img.get("data-original")
+            if not src or _is_generic_image(src):
+                continue
+            try:
+                width = int(img.get("width", 0))
+                height = int(img.get("height", 0))
+                if 0 < width < 150 or 0 < height < 150:
+                    continue  # صورة صغيرة جداً غالباً أيقونة وليست صورة الخبر
+            except (TypeError, ValueError):
+                pass
+            return src
+
+    return None
+
+
 def fetch_article(url: str) -> dict:
     """
     يفتح صفحة الخبر ويستخرج: العنوان الأصلي، نص الخبر الكامل، رابط الصورة البارزة.
@@ -115,12 +197,6 @@ def fetch_article(url: str) -> dict:
     # العنوان
     title_tag = soup.find("h1")
     title = title_tag.get_text(" ", strip=True) if title_tag else None
-
-    # الصورة البارزة: نعتمد أولاً على og:image ثم أول صورة داخل جسم المقال
-    image_url = None
-    og_image = soup.find("meta", property="og:image")
-    if og_image and og_image.get("content"):
-        image_url = og_image["content"]
 
     # جسم الخبر: نبحث عن أكبر تجمّع فقرات <p> بعد العنوان (الأسلوب الأكثر ثباتاً
     # عبر مواقع الأخبار المختلفة دون الاعتماد على أسماء كلاسات قد تتغيّر)
@@ -135,10 +211,7 @@ def fetch_article(url: str) -> dict:
                 continue
             paragraphs.append(txt)
 
-    if not image_url and article_tag:
-        img_tag = article_tag.find("img", src=True)
-        if img_tag:
-            image_url = img_tag["src"]
+    image_url = _extract_featured_image(soup, article_tag)
 
     body_text = "\n\n".join(paragraphs[:12])  # حد أقصى معقول لحجم النص المُرسل لـ Gemini
 
