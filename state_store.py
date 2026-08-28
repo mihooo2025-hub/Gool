@@ -36,8 +36,10 @@ def load_state() -> dict:
         return _get_default_state()
 
 
-def save_state(state: dict) -> None:
+def save_state(state: dict = None, **kwargs) -> None:
     """حفظ الحالة إلى الملف بشكل آمن."""
+    if state is None:
+        state = kwargs.get("state", {})
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -64,7 +66,7 @@ def is_duplicate(state: dict = None, url: str = "", title: str = "", **kwargs) -
 
 
 def mark_processed(state: dict = None, url: str = "", **kwargs) -> None:
-    """علامة الخبر كمنشور مع قبول المعاملات المسمات باي ترتيب."""
+    """علامة الخبر كمنشور مع قبول المعاملات مسمات أو غير مسمات وبأي ترتيب."""
     if state is None:
         state = kwargs.get("state", {})
     if not url:
@@ -93,6 +95,10 @@ def add_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
         state["pending_retry"].append(url)
 
 
+def add_to_retry_queue(state: dict = None, url: str = "", **kwargs) -> None:
+    add_pending_retry(state=state, url=url, **kwargs)
+
+
 def remove_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
     if state is None:
         state = kwargs.get("state", {})
@@ -101,6 +107,15 @@ def remove_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
 
     if "pending_retry" in state and url in state["pending_retry"]:
         state["pending_retry"].remove(url)
+
+
+def remove_from_retry_queue(state: dict = None, url: str = "", **kwargs) -> None:
+    """دالة مستعارة لحذف الخبر من قائمة الانتظار متوافقة مع main.py."""
+    if state is None:
+        state = kwargs.get("state", {})
+    if not url:
+        url = kwargs.get("url", "")
+    remove_pending_retry(url=url, state=state, **kwargs)
 
 
 def pop_retry_queue(state: dict = None, **kwargs) -> list:
