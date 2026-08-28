@@ -12,6 +12,7 @@ scraper_goal.py
 import re
 import requests
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
 import config
 
@@ -29,7 +30,7 @@ TIME_PATTERN = re.compile(
     re.UNICODE,
 )
 
-# قائمة سوداء موسعة للصور العامة/الافتراضية المكررة بموقع Goal
+# قائمة سوداء للصور العامة/الافتراضية فقط
 _GENERIC_IMAGE_MARKERS = (
     "brand-logo",
     "lcp-hack-background",
@@ -44,7 +45,6 @@ _GENERIC_IMAGE_MARKERS = (
     "og-image",
     "goal-logo",
     "fallback",
-    "assets.goal.com/v3/assets",
     "images.outbrain.com",
 )
 
@@ -52,11 +52,13 @@ _GENERIC_IMAGE_MARKERS = (
 def _relative_time_to_minutes(text: str):
     if not text:
         return None
+
     m = TIME_PATTERN.search(text.strip())
     if not m:
         return None
-    
+
     matched_text = m.group(0)
+
     if matched_text.startswith("الآن"):
         return 0
     if m.group("min_single"):
@@ -71,11 +73,16 @@ def _relative_time_to_minutes(text: str):
         return 120
     if m.group("hour_num"):
         return int(m.group("hour_num")) * 60
+
     return None
 
 
 def _fetch(url: str) -> str:
-    resp = requests.get(url, headers=config.SCRAPE_REQUEST_HEADERS, timeout=25)
+    resp = requests.get(
+        url,
+        headers=config.SCRAPE_REQUEST_HEADERS,
+        timeout=25,
+    )
     resp.raise_for_status()
     return resp.text
 
@@ -83,30 +90,45 @@ def _fetch(url: str) -> str:
 def _is_generic_image(url: str) -> bool:
     if not url:
         return True
+
     low = url.lower()
-    return any(marker in low for marker in _GENERIC_IMAGE_MARKERS)
+
+    return any(
+        marker in low
+        for marker in _GENERIC_IMAGE_MARKERS
+    )
 
 
 def get_recent_article_links(window_hours: int = 3, max_limit: int = 15) -> list:
     """جلب الأخبار الصادرة خلال window_hours مع حد أقصى max_limit لمنع التراكم."""
-    window_hours = window_hours or getattr(config, "RECENCY_WINDOW_HOURS", 3)
+    window_hours = window_hours or getattr(
+        config,
+        "RECENCY_WINDOW_HOURS",
+        3,
+    )
+
     window_minutes = window_hours * 60
 
     found = {}
-    for page_url in (config.SOURCE_NEWS_LISTING_URL, config.SOURCE_HOME_URL):
+
+    for page_url in (
+        config.SOURCE_NEWS_LISTING_URL,
+        config.SOURCE_HOME_URL,
+    ):
         try:
             html = _fetch(page_url)
         except requests.RequestException as e:
             print(f"خطأ أثناء جلب القائمة من {page_url}: {e}")
             continue
-            
+
         soup = BeautifulSoup(html, "html.parser")
 
         for a in soup.find_all("a", href=True):
             href = a["href"]
+
             if href.startswith("/"):
                 href = config.SOURCE_BASE_URL + href
-            
+
             href = href.split("?")[0].split("#")[0]
 
             if not ARTICLE_URL_RE.match(href):
@@ -114,86 +136,217 @@ def get_recent_article_links(window_hours: int = 3, max_limit: int = 15) -> list
 
             text = a.get_text(" ", strip=True)
             minutes_ago = _relative_time_to_minutes(text)
-            
-            if minutes_ago is None:
-                parent = a.find_parent(["article", "div", "li"])
-                if parent:
-                    parent_text = parent.get_text(" ", strip=True)
-                    minutes_ago = _relative_time_to_minutes(parent_text)
 
-            # تعديل جوهري: استبعاد الرابط إن لم نتمكن من تحديد توقيته الصريح
+            if minutes_ago is None:
+                parent = a.find_parent(
+                    ["article", "div", "li"]
+                )
+
+                if parent:
+                    parent_text = parent.get_text(
+                        " ",
+                        strip=True,
+                    )
+                    minutes_ago = _relative_time_to_minutes(
+                        parent_text
+                    )
+
+            # استبعاد الرابط إن لم نتمكن من تحديد توقيته الصريح
             if minutes_ago is None:
                 continue
 
             if minutes_ago > window_minutes:
                 continue
 
-            clean_title = TIME_PATTERN.sub("", text).strip()
+            clean_title = TIME_PATTERN.sub(
+                "",
+                text,
+            ).strip()
+
             if not clean_title or len(clean_title) < 10:
                 clean_title = text
 
-            if href not in found or found[href]["minutes_ago"] > minutes_ago:
+            if (
+                href not in found
+                or found[href]["minutes_ago"] > minutes_ago
+            ):
                 found[href] = {
                     "url": href,
                     "listing_title": clean_title,
                     "minutes_ago": minutes_ago,
                 }
 
-    sorted_articles = sorted(found.values(), key=lambda x: x["minutes_ago"])
-    # إرجاع عدد أقصى محدد من الأخبار فقط لكل دورة
+    sorted_articles = sorted(
+        found.values(),
+        key=lambda x: x["minutes_ago"],
+    )
+
     return sorted_articles[:max_limit]
 
 
 def _extract_featured_image(soup: BeautifulSoup, article_tag) -> str:
-    h1 = soup.find("h1")
-    if h1:
-        parent = h1.find_parent(["article", "main", "div"])
-        if parent:
-            for img in parent.find_all("img"):
-                src = img.get("src") or img.get("data-src") or img.get("srcset") or img.get("data-srcset")
-                if srcset := img.get("srcset"):
-                    src = srcset.split(",")[0].split(" ")[0]
-                
-                if src and not _is_generic_image(src):
-                    return src
+    """
+    استخراج الصورة البارزة الخاصة بالخبر.
 
-    if article_tag:
-        for img in article_tag.find_all("img"):
-            src = img.get("src") or img.get("data-src") or img.get("data-original")
-            if not src or _is_generic_image(src):
-                continue
-            return src
+    الأولوية:
+    1) og:image
+    2) twitter:image
+    3) الصورة داخل المقال
+    4) الصورة الموجودة قرب العنوان
+    """
 
+    # ---------------------------------------------------------
+    # 1) الصورة الخاصة بالخبر من Open Graph
+    # ---------------------------------------------------------
     for prop in ("og:image", "twitter:image"):
-        meta = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+        meta = (
+            soup.find("meta", property=prop)
+            or soup.find("meta", attrs={"name": prop})
+        )
+
         if meta and meta.get("content"):
-            img_url = meta["content"]
+            img_url = urljoin(
+                config.SOURCE_BASE_URL,
+                meta["content"].strip(),
+            )
+
             if not _is_generic_image(img_url):
                 return img_url
+
+    # ---------------------------------------------------------
+    # 2) الصور الموجودة داخل المقال نفسه
+    # ---------------------------------------------------------
+    if article_tag:
+        for img in article_tag.find_all("img"):
+            src = (
+                img.get("src")
+                or img.get("data-src")
+                or img.get("data-original")
+                or img.get("data-lazy-src")
+                or img.get("data-srcset")
+                or img.get("srcset")
+            )
+
+            if not src:
+                continue
+
+            # اختيار أفضل رابط من srcset
+            if "," in src:
+                candidates = []
+
+                for item in src.split(","):
+                    item = item.strip()
+                    if not item:
+                        continue
+
+                    parts = item.split()
+                    candidates.append(parts[0])
+
+                if candidates:
+                    src = candidates[-1]
+
+            src = urljoin(
+                config.SOURCE_BASE_URL,
+                src.strip(),
+            )
+
+            if not _is_generic_image(src):
+                return src
+
+    # ---------------------------------------------------------
+    # 3) البحث عن صورة مرتبطة بالعنوان
+    # ---------------------------------------------------------
+    h1 = soup.find("h1")
+
+    if h1:
+        parent = h1.find_parent(
+            ["article", "main", "div"]
+        )
+
+        if parent:
+            for img in parent.find_all("img"):
+                src = (
+                    img.get("src")
+                    or img.get("data-src")
+                    or img.get("data-original")
+                    or img.get("data-lazy-src")
+                    or img.get("data-srcset")
+                    or img.get("srcset")
+                )
+
+                if not src:
+                    continue
+
+                if "," in src:
+                    parts = [
+                        item.strip().split()[0]
+                        for item in src.split(",")
+                        if item.strip()
+                    ]
+
+                    if parts:
+                        src = parts[-1]
+
+                src = urljoin(
+                    config.SOURCE_BASE_URL,
+                    src.strip(),
+                )
+
+                if not _is_generic_image(src):
+                    return src
 
     return None
 
 
 def fetch_article(url: str) -> dict:
     html = _fetch(url)
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(
+        html,
+        "html.parser",
+    )
 
     title_tag = soup.find("h1")
-    title = title_tag.get_text(" ", strip=True) if title_tag else None
 
-    article_tag = soup.find("article") or soup.find("main") or soup.body
+    title = (
+        title_tag.get_text(
+            " ",
+            strip=True,
+        )
+        if title_tag
+        else None
+    )
+
+    article_tag = (
+        soup.find("article")
+        or soup.find("main")
+        or soup.body
+    )
+
     paragraphs = []
+
     if article_tag:
         for p in article_tag.find_all("p"):
-            txt = p.get_text(" ", strip=True)
+            txt = p.get_text(
+                " ",
+                strip=True,
+            )
+
             if len(txt) < 30:
                 continue
+
             if txt in paragraphs:
                 continue
+
             paragraphs.append(txt)
 
-    image_url = _extract_featured_image(soup, article_tag)
-    body_text = "\n\n".join(paragraphs[:12])
+    image_url = _extract_featured_image(
+        soup,
+        article_tag,
+    )
+
+    body_text = "\n\n".join(
+        paragraphs[:12]
+    )
 
     return {
         "url": url,
