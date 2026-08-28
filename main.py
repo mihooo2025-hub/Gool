@@ -7,9 +7,10 @@ main.py
 1) جلب الأخبار المتاحة خلال آخر 3 ساعات من Goal.com العربي.
 2) إضافة الأخبار التي فشلت في الدورات السابقة لإعادة محاولتها.
 3) استبعاد المكرر (بالرابط أو بتشابه العنوان).
-4) لكل خبر: جلب النص + الصورة -> إعادة الصياغة عبر Gemini -> النشر كمسودة في ووردبريس.
-5) الأخبار ذات المحتوى التالف تُستبعد نهائياً دون إعادة المحاولة.
-6) إرسال تقرير نهائي إلى تيليجرام.
+4) لكل خبر: محاولة المعالجة والنشر حتى مرتين داخل نفس الدورة في حال حدوث خطأ مؤقت.
+5) إذا فشلت المحاولات داخل الدورة، يُصنف الخبر كفاشل ويُحفظ لإعادة المحاولة بالدورة القادمة.
+6) استبعاد المقالات ذات المحتوى التالف أو بدون عنوان نهائياً.
+7) إرسال تقرير نهائي إلى تيليجرام.
 """
 
 import time
@@ -21,6 +22,8 @@ import scraper_goal
 import rewriter_gemini
 import wordpress_client
 import telegram_notify
+
+MAX_RETRIES = 2  # عدد المحاولات داخل نفس الدورة قبل تصنيف الخبر كفاشل
 
 
 def _normalize_candidate(item) -> dict:
@@ -52,73 +55,84 @@ def process_one(candidate: dict, state: dict, published_report: list, failed_rep
     print(f"\n--- معالجة: {listing_title[:60]} ---")
     print(url)
 
-    # 1) جلب نص الخبر والصورة
-    try:
-        article = scraper_goal.fetch_article(url)
-    except Exception as e:
-        print(f"  فشل جلب المقال: {e}")
-        # الاستبعاد النهائيات للروابط المكسورة لمنع استمرار تكرارها
-        state_store.remove_from_retry_queue(state, url)
-        failed_report.append({"listing_title": listing_title, "url": url, "reason": "فشل جلب الصفحة (تم استبعاده)"})
-        return
+    last_error_reason = ""
 
-    if not article.get("title") or not article.get("body_text"):
-        print("  تعذّر استخراج عنوان أو نص كافٍ من الصفحة")
-        # المحتوى غير المكتمل يُستبعد نهائياً ولا يُعاد للقائمة
-        state_store.remove_from_retry_queue(state, url)
-        failed_report.append({"listing_title": listing_title, "url": url, "reason": "محتوى غير مكتمل (تم استبعاده)"})
-        return
+    # حلقة إعادة المحاولة داخل نفس الدورة (حتى مرتين)
+    for attempt in range(1, MAX_RETRIES + 1):
+        if attempt > 1:
+            print(f"  🔄 المحاولة رقم {attempt} للخبر...")
+            time.sleep(5)  # انتظار قصير قبل إعادة المحاولة
 
-    # تحقق تكرار إضافي بالعنوان الحقيقي المستخرج من الصفحة
-    if state_store.is_duplicate(state, url, article["title"]):
-        print("  تم تجاهله: خبر مكرر")
-        state_store.remove_from_retry_queue(state, url)
-        return
+        # 1) جلب نص الخبر والصورة
+        try:
+            article = scraper_goal.fetch_article(url)
+        except Exception as e:
+            print(f"  فشل جلب المقال (محاولة {attempt}): {e}")
+            last_error_reason = f"فشل جلب الصفحة: {e}"
+            continue
 
-    # 2) إعادة الصياغة عبر Gemini
-    try:
-        rewritten = rewriter_gemini.rewrite_article(article)
-    except rewriter_gemini.RewriteError as e:
-        print(f"  فشلت إعادة الصياغة: {e}")
-        state_store.add_to_retry_queue(state, candidate, "فشلت إعادة الصياغة (تجاوز الحصة أو خطأ)")
-        failed_report.append({"listing_title": article.get("title", listing_title), "url": url, "reason": "فشلت إعادة الصياغة"})
-        return
-    finally:
-        time.sleep(10)
-
-    # 3) النشر في ووردبريس (يشترط وجود صورة بارزة صالحة)
-    try:
-        post = wordpress_client.publish_rewritten_article(rewritten, article.get("image_url"))
-    except wordpress_client.WordPressError as e:
-        msg = str(e)
-        if "صورة بارزة" in msg:
-            print(f"  تم تجاهل الخبر نهائياً: {msg}")
+        if not article.get("title") or not article.get("body_text"):
+            print("  تعذّر استخراج عنوان أو نص كافٍ من الصفحة")
+            # المحتوى التالف يُستبعد نهائياً دون تكرار المحاولات
             state_store.remove_from_retry_queue(state, url)
-        else:
-            print(f"  فشل النشر: {msg}")
-            state_store.add_to_retry_queue(state, candidate, f"فشل النشر: {msg}")
-            failed_report.append({"listing_title": article.get("title", listing_title), "url": url, "reason": "فشل النشر في ووردبريس"})
-        return
-    finally:
-        time.sleep(config.DELAY_BETWEEN_PUBLISHES_SECONDS)
+            failed_report.append({"listing_title": listing_title, "url": url, "reason": "محتوى غير مكتمل (تم استبعاده)"})
+            return
 
-    # 4) نجاح كامل -> تسجيل الحالة والتقرير
-    state_store.mark_published(
-        state,
-        url=url,
-        title=article["title"],
-        new_title=rewritten["title"],
-        wp_post_id=post.get("id"),
-    )
-    state_store.remove_from_retry_queue(state, url)
-    published_report.append(
-        {
-            "new_title": rewritten["title"],
-            "original_url": url,
-            "wp_post_id": post.get("id"),
-        }
-    )
-    print(f"  ✅ نُشر كمسودة (post id={post.get('id')})")
+        # تحقق تكرار إضافي بالعنوان الحقيقي المستخرج من الصفحة
+        if state_store.is_duplicate(state, url, article["title"]):
+            print("  تم تجاهله: خبر مكرر")
+            state_store.remove_from_retry_queue(state, url)
+            return
+
+        # 2) إعادة الصياغة عبر Gemini
+        try:
+            rewritten = rewriter_gemini.rewrite_article(article)
+        except rewriter_gemini.RewriteError as e:
+            print(f"  فشلت إعادة الصياغة (محاولة {attempt}): {e}")
+            last_error_reason = "فشلت إعادة الصياغة (Gemini API)"
+            continue
+        finally:
+            time.sleep(10)
+
+        # 3) النشر في ووردبريس
+        try:
+            post = wordpress_client.publish_rewritten_article(rewritten, article.get("image_url"))
+        except wordpress_client.WordPressError as e:
+            msg = str(e)
+            if "صورة بارزة" in msg:
+                print(f"  تم تجاهل الخبر نهائياً: {msg}")
+                state_store.remove_from_retry_queue(state, url)
+                return
+            else:
+                print(f"  فشل النشر (محاولة {attempt}): {msg}")
+                last_error_reason = f"فشل النشر: {msg}"
+                continue
+        finally:
+            time.sleep(config.DELAY_BETWEEN_PUBLISHES_SECONDS)
+
+        # 4) نجاح كامل -> تسجيل الحالة والتقرير الخروج من المحاولات
+        state_store.mark_published(
+            state,
+            url=url,
+            title=article["title"],
+            new_title=rewritten["title"],
+            wp_post_id=post.get("id"),
+        )
+        state_store.remove_from_retry_queue(state, url)
+        published_report.append(
+            {
+                "new_title": rewritten["title"],
+                "original_url": url,
+                "wp_post_id": post.get("id"),
+            }
+        )
+        print(f"  ✅ نُشر كمسودة (post id={post.get('id')})")
+        return
+
+    # إذا استُنفدت جميع المحاولات داخل الدورة الحالية ولم ينجح:
+    print(f"  ❌ فشل الخبر بعد {MAX_RETRIES} محاولات في هذه الدورة. سيتم تأجيله للدورة القادمة.")
+    state_store.add_to_retry_queue(state, candidate, last_error_reason)
+    failed_report.append({"listing_title": listing_title, "url": url, "reason": last_error_reason})
 
 
 def run() -> None:
