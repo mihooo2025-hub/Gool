@@ -1,133 +1,69 @@
 """
 state_store.py
----------------
-يدير ملف data/state.json الذي يحفظ:
-1) الأخبار المنشورة بنجاح سابقاً (لمنع التكرار) - عبر تجزئة الرابط + العنوان.
-2) قائمة انتظار للأخبار التي فشلت معالجتها، لإعادة المحاولة في الدورة التالية.
-
-تم تحديثه للتعامل الآمن مع قراءة/كتابة ملفات JSON التالفة أو الفارغة دون انهيار السكربت.
+--------------
+إدارة حالة الأخبار المنشورة وحظر التكرار.
+محصّن بالكامل ضد أخطاء JSONDecodeError في حال تلف الملف.
 """
 
-import json
 import os
-import hashlib
-import difflib
-from datetime import datetime, timedelta, timezone
+import json
 
-import config
+STATE_FILE = os.path.join("data", "state.json")
 
 
-def _now_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _url_hash(url: str) -> str:
-    return hashlib.sha256(url.strip().split("?")[0].encode("utf-8")).hexdigest()
+def _get_default_state() -> dict:
+    return {
+        "processed_urls": [],
+        "pending_retry": []
+    }
 
 
 def load_state() -> dict:
-    if not os.path.exists(config.STATE_FILE):
-        return {"published": [], "pending_retry": []}
-    
+    """تحميل الملف مع حماية كاملة ضد التلف أو قيم JSON المكسورة."""
+    if not os.path.exists(STATE_FILE):
+        return _get_default_state()
+
     try:
-        with open(config.STATE_FILE, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-            if not content:
-                # إذا كان الملف فارغاً تماماً
-                return {"published": [], "pending_retry": []}
-            data = json.loads(content)
-    except Exception as e:
-        print(f"تحذير: تعذرت قراءة ملف الحالة ({e})، سيتم البدء بحالة جديدة آمنة.")
-        data = {}
-
-    if not isinstance(data, dict):
-        data = {}
-
-    data.setdefault("published", [])
-    data.setdefault("pending_retry", [])
-    return data
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                data.setdefault("processed_urls", [])
+                data.setdefault("pending_retry", [])
+                return data
+            return _get_default_state()
+    except (json.JSONDecodeError, Exception) as e:
+        print(f"⚠️ تنبيه: ملف state.json تالف أو غير صالح ({e}). سيتم إعادة إنشائه تلقائياً.")
+        return _get_default_state()
 
 
 def save_state(state: dict) -> None:
-    os.makedirs(config.DATA_DIR, exist_ok=True)
-    
-    # تنظيف السجلات القديمة جداً حتى لا يتضخم الملف إلى الأبد
-    cutoff = datetime.now(timezone.utc) - timedelta(days=config.KEEP_HISTORY_DAYS)
-    cleaned = []
-    for item in state.get("published", []):
-        try:
-            ts = datetime.fromisoformat(item["processed_at"])
-        except Exception:
-            cleaned.append(item)
-            continue
-        if ts >= cutoff:
-            cleaned.append(item)
-    state["published"] = cleaned
-
-    temp_file = f"{config.STATE_FILE}.tmp"
+    """حفظ الحالة إلى الملف بشكل آمن."""
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     try:
-        # الكتابة في ملف مؤقت أولاً ثم استبداله لضمان عدم تلف الملف الرئيسي إذا حدث انقطاع مفاجئ
-        with open(temp_file, "w", encoding="utf-8") as f:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(temp_file, config.STATE_FILE)
     except Exception as e:
-        print(f"خطأ أثناء حفظ الحالة: {e}")
+        print(f"خطأ أثناء حفظ state.json: {e}")
 
 
-def is_duplicate(state: dict, url: str, title: str) -> bool:
-    """يتحقق من التكرار عبر تطابق الرابط أولاً، ثم تشابه العنوان الضبابي."""
-    if not url:
-        return False
-        
-    h = _url_hash(url)
-    clean_title = title.strip() if title else ""
-
-    for item in state.get("published", []):
-        if item.get("url_hash") == h or item.get("url") == url:
-            return True
-        
-        if clean_title and item.get("title"):
-            similarity = difflib.SequenceMatcher(
-                None, item.get("title", "").strip(), clean_title
-            ).ratio()
-            if similarity >= config.TITLE_SIMILARITY_THRESHOLD:
-                return True
-                
-    return False
+def is_processed(url: str, state: dict) -> bool:
+    return url in state.get("processed_urls", [])
 
 
-def mark_published(state: dict, url: str, title: str, new_title: str, wp_post_id) -> None:
-    state.setdefault("published", []).append(
-        {
-            "url_hash": _url_hash(url),
-            "url": url,
-            "title": title,
-            "new_title": new_title,
-            "wp_post_id": wp_post_id,
-            "processed_at": _now_iso(),
-        }
-    )
+def mark_processed(url: str, state: dict) -> None:
+    if "processed_urls" not in state:
+        state["processed_urls"] = []
+    if url not in state["processed_urls"]:
+        state["processed_urls"].append(url)
 
 
-def add_to_retry_queue(state: dict, article: dict, reason: str) -> None:
-    """يضيف خبراً فشلت معالجته إلى قائمة الانتظار لإعادة المحاولة بالدورة القادمة."""
-    existing = {a["url"] for a in state.get("pending_retry", []) if "url" in a}
-    if article.get("url") in existing:
-        return
-    item = dict(article)
-    item["fail_reason"] = reason
-    item["queued_at"] = _now_iso()
-    state.setdefault("pending_retry", []).append(item)
+def add_pending_retry(url: str, state: dict) -> None:
+    if "pending_retry" not in state:
+        state["pending_retry"] = []
+    if url not in state["pending_retry"]:
+        state["pending_retry"].append(url)
 
 
-def pop_retry_queue(state: dict) -> list:
-    """يسحب كل قائمة الانتظار الحالية ويفرغها (سيُعاد ملؤها بما يفشل مجدداً)."""
-    items = state.get("pending_retry", [])
-    state["pending_retry"] = []
-    return items
-
-
-def remove_from_retry_queue(state: dict, url: str) -> None:
-    state["pending_retry"] = [
-        a for a in state.get("pending_retry", []) if a.get("url") != url
-    ]
+def remove_pending_retry(url: str, state: dict) -> None:
+    if "pending_retry" in state and url in state["pending_retry"]:
+        state["pending_retry"].remove(url)
