@@ -125,10 +125,13 @@ def rewrite_article(article: dict) -> dict:
         except RewriteError as e:
             last_error = e
             print(f"  [محاولة {i}/{len(attempts)}] فشلت عبر {model}: {e}")
+            if "quota_exceeded=True" in str(e) or "429" in str(e):
+                time.sleep(5)  # انتظار 5 ثوانٍ عند استنفاد الحصة قبل الانتقال للبديل
             continue
 
     raise RewriteError(f"فشلت كل محاولات إعادة الصياغة. آخر خطأ: {last_error}")
 
 
 def sleep_between_rewrites():
-    time.sleep(config.DELAY_BETWEEN_REWRITES_SECONDS)
+    """تأخير زمني لمدة 15 ثانية بين كل خبر وآخر لتفادي تجاوز حدود الطلبات المجانية."""
+    time.sleep(15)
