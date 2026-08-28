@@ -46,49 +46,67 @@ def save_state(state: dict) -> None:
         print(f"خطأ أثناء حفظ state.json: {e}")
 
 
-def is_processed(url: str, state: dict) -> bool:
-    if isinstance(url, dict) and isinstance(state, str):
-        url, state = state, url
+def is_processed(url: str = "", state: dict = None, **kwargs) -> bool:
+    if state is None:
+        state = kwargs.get("state", {})
+    if not url:
+        url = kwargs.get("url", "")
     return url in state.get("processed_urls", [])
 
 
-def is_duplicate(state: dict, url: str, title: str = "") -> bool:
+def is_duplicate(state: dict = None, url: str = "", title: str = "", **kwargs) -> bool:
     """التحقق مما إذا كان الرابط قد تم معالجته سابقاً لمنع التكرار."""
-    return is_processed(url, state)
+    if state is None:
+        state = kwargs.get("state", {})
+    if not url:
+        url = kwargs.get("url", "")
+    return is_processed(url=url, state=state)
 
 
-def mark_processed(arg1, arg2) -> None:
-    """حفظ الرابط كمنشور مع دعم مرن لترتيب الوسائط (url, state) أو (state, url)."""
-    if isinstance(arg1, dict):
-        state, url = arg1, arg2
-    else:
-        url, state = arg1, arg2
+def mark_processed(state: dict = None, url: str = "", **kwargs) -> None:
+    """علامة الخبر كمنشور مع قبول المعاملات المسمات باي ترتيب."""
+    if state is None:
+        state = kwargs.get("state", {})
+    if not url:
+        url = kwargs.get("url", "")
 
     if "processed_urls" not in state:
         state["processed_urls"] = []
-    if url not in state["processed_urls"]:
+    if url and url not in state["processed_urls"]:
         state["processed_urls"].append(url)
 
 
-def mark_published(arg1, arg2) -> None:
+def mark_published(state: dict = None, url: str = "", **kwargs) -> None:
     """دالة مستعارة لتوسيم الخبر كمنشور متوافقة مع main.py."""
-    mark_processed(arg1, arg2)
+    mark_processed(state=state, url=url, **kwargs)
 
 
-def add_pending_retry(url: str, state: dict) -> None:
+def add_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
+    if state is None:
+        state = kwargs.get("state", {})
+    if not url:
+        url = kwargs.get("url", "")
+
     if "pending_retry" not in state:
         state["pending_retry"] = []
-    if url not in state["pending_retry"]:
+    if url and url not in state["pending_retry"]:
         state["pending_retry"].append(url)
 
 
-def remove_pending_retry(url: str, state: dict) -> None:
+def remove_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
+    if state is None:
+        state = kwargs.get("state", {})
+    if not url:
+        url = kwargs.get("url", "")
+
     if "pending_retry" in state and url in state["pending_retry"]:
         state["pending_retry"].remove(url)
 
 
-def pop_retry_queue(state: dict) -> list:
+def pop_retry_queue(state: dict = None, **kwargs) -> list:
     """استخراج قائمة العناصر المنتظرة لإعادة المحاولة وإفراغها من الحالة."""
+    if state is None:
+        state = kwargs.get("state", {})
     retry_list = list(state.get("pending_retry", []))
     state["pending_retry"] = []
     return retry_list
