@@ -3,7 +3,7 @@ rewriter_gemini.py
 --------------------
 يرسل نص الخبر الأصلي إلى Gemini لإعادة الصياغة وفق قواعد rules_ar.md،
 مع تبديل تلقائي بين:
-  - النموذج الأساسي (gemini-3.6-flash) والنموذج الاحتياطي (gemini-3.5-flash-lite)
+  - النموذج الأساسي والنموذج الاحتياطي
   - المفتاح الأول والمفتاح الثاني
 بحيث تكون هناك حتى 4 محاولات لكل خبر قبل اعتباره فاشلاً في هذه الدورة.
 """
@@ -63,12 +63,18 @@ def _call_gemini(api_key: str, model: str, system_prompt: str, article: dict) ->
     }
 
     url = GEMINI_ENDPOINT.format(model=model)
-    resp = requests.post(
-        url,
-        params={"key": api_key},
-        json=payload,
-        timeout=60,
-    )
+    
+    try:
+        resp = requests.post(
+            url,
+            params={"key": api_key},
+            json=payload,
+            timeout=120,  # تم رفع المهلة لـ 120 ثانية لتفادي ReadTimeout
+        )
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as e:
+        raise RewriteError(f"انتهت مهلة الاتصال بـ Gemini ({model}): {e}")
+    except requests.exceptions.RequestException as e:
+        raise RewriteError(f"خطأ في شبكة الاتصال أثناء الطلب لـ Gemini: {e}")
 
     if resp.status_code != 200:
         body = resp.text[:500]
