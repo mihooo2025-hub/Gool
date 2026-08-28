@@ -2,12 +2,11 @@
 wordpress_client.py
 ---------------------
 كل التعامل مع ووردبريس عبر REST API:
-1) جلب قائمة التصنيفات الحقيقية من الموقع ومطابقتها بالاسم حرفياً
-   (لتفادي مشكلة إنشاء تصنيفات مكررة بسبب اختلاف بسيط في الإملاء).
+1) جلب قائمة التصنيفات الحقيقية من الموقع ومطابقتها بالاسم حرفياً.
 2) تنزيل الصورة البارزة من رابط المصدر ثم رفعها كوسائط (Media) في ووردبريس.
 3) إنشاء المقال كمسودة (draft) مع العنوان، المحتوى، الصورة البارزة، والتصنيفات.
 
-قاعدة إلزامية: إذا لم نجد صورة بارزة أو تعذّر تنزيلها/رفعها، لا يُنشأ المقال إطلاقاً.
+تم تحسينه للتحقق الآمن من استجابات JSON لتفادي خطأ JSONDecodeError عند استلام صفحات HTML غير متوقعة.
 """
 
 import io
@@ -30,11 +29,20 @@ def _api(path: str) -> str:
     return f"{config.WP_BASE_URL}/wp-json/wp/v2/{path.lstrip('/')}"
 
 
+def _safe_json_decode(resp: requests.Response, action_name: str) -> dict:
+    """تحليل استجابة JSON بأمان لتفادي توقف السكربت عند استلام صفحات HTML أو استجابات غير صالحة."""
+    try:
+        return resp.json()
+    except Exception:
+        preview = resp.text[:200] if resp.text else "لا يوجد نص في الاستجابة"
+        raise WordPressError(f"فشل تحليل JSON أثناء {action_name} (status={resp.status_code}): {preview}")
+
+
 _categories_cache = None
 
 
 def get_categories_map() -> dict:
-    """يعيد قاموس {اسم التصنيف: id} لكل تصنيفات الموقع الحقيقية (مع الترقيم/الصفحات)."""
+    """يعيد قاموس {اسم التصنيف: id} لكل تصنيفات الموقع الحقيقية."""
     global _categories_cache
     if _categories_cache is not None:
         return _categories_cache
@@ -42,19 +50,27 @@ def get_categories_map() -> dict:
     mapping = {}
     page = 1
     while True:
-        resp = requests.get(
-            _api("categories"),
-            params={"per_page": 100, "page": page},
-            auth=_auth(),
-            timeout=30,
-        )
+        try:
+            resp = requests.get(
+                _api("categories"),
+                params={"per_page": 100, "page": page},
+                auth=_auth(),
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            raise WordPressError(f"خطأ اتصال أثناء جلب التصنيفات: {e}")
+
         if resp.status_code != 200:
             raise WordPressError(f"فشل جلب التصنيفات: {resp.status_code} {resp.text[:300]}")
-        items = resp.json()
-        if not items:
+            
+        items = _safe_json_decode(resp, "جلب التصنيفات")
+        if not isinstance(items, list) or not items:
             break
+            
         for item in items:
-            mapping[item["name"].strip()] = item["id"]
+            if isinstance(item, dict) and "name" in item and "id" in item:
+                mapping[item["name"].strip()] = item["id"]
+                
         if len(items) < 100:
             break
         page += 1
@@ -64,15 +80,9 @@ def get_categories_map() -> dict:
 
 
 def resolve_category_ids(category_names: list) -> list:
-    """
-    يطابق أسماء التصنيفات القادمة من Gemini بأسماء التصنيفات الحقيقية في ووردبريس
-    حرفياً فقط. أي اسم غير موجود بالضبط في الموقع يُتجاهل (لا يُنشأ تصنيف جديد أبداً).
-    يضيف دائماً تصنيف "الرئيسية" الإنجليزي الإلزامي.
-    """
     wp_categories = get_categories_map()
     resolved_ids = []
 
-    # التصنيف الإلزامي أولاً
     always_id = wp_categories.get(config.ALWAYS_INCLUDE_CATEGORY)
     if always_id:
         resolved_ids.append(always_id)
@@ -82,9 +92,9 @@ def resolve_category_ids(category_names: list) -> list:
         if name in config.EXCLUDED_CATEGORIES:
             continue
         if name == config.ALWAYS_INCLUDE_CATEGORY:
-            continue  # أُضيف بالفعل
+            continue
         if name not in config.SELECTABLE_CATEGORIES:
-            continue  # يمنع أي تصنيف غير موجود في القائمة المسموحة
+            continue
         cid = wp_categories.get(name)
         if cid and cid not in resolved_ids:
             resolved_ids.append(cid)
@@ -93,7 +103,6 @@ def resolve_category_ids(category_names: list) -> list:
 
 
 def download_image(image_url: str) -> tuple:
-    """ينزّل الصورة البارزة من المصدر. يعيد (bytes, content_type, filename) أو None عند الفشل."""
     if not image_url:
         return None
     try:
@@ -113,24 +122,30 @@ def download_image(image_url: str) -> tuple:
 
 
 def upload_media(image_bytes: bytes, content_type: str, filename: str, title: str) -> int:
-    """يرفع الصورة إلى مكتبة الوسائط في ووردبريس ويعيد media_id."""
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Content-Type": content_type,
     }
-    resp = requests.post(
-        _api("media"),
-        headers=headers,
-        data=image_bytes,
-        auth=_auth(),
-        timeout=60,
-    )
+    try:
+        resp = requests.post(
+            _api("media"),
+            headers=headers,
+            data=image_bytes,
+            auth=_auth(),
+            timeout=60,
+        )
+    except requests.RequestException as e:
+        raise WordPressError(f"خطأ شبكة أثناء رفع الصورة البارزة: {e}")
+
     if resp.status_code not in (200, 201):
         raise WordPressError(f"فشل رفع الصورة البارزة: {resp.status_code} {resp.text[:300]}")
 
-    media_id = resp.json().get("id")
+    data = _safe_json_decode(resp, "رفع الصورة")
+    media_id = data.get("id") if isinstance(data, dict) else None
 
-    # تحديث alt text / caption بعنوان الخبر (اختياري لكن مفيد للسيو)
+    if not media_id:
+        raise WordPressError("لم يعُد ووردبريس معرّف الصورة (media_id) بعد الرفع")
+
     try:
         requests.post(
             _api(f"media/{media_id}"),
@@ -148,21 +163,22 @@ def create_draft_post(title: str, body_html: str, category_ids: list, featured_m
     payload = {
         "title": title,
         "content": body_html,
-        "status": config.WP_POST_STATUS,  # draft دائماً
+        "status": config.WP_POST_STATUS,
         "categories": category_ids,
         "featured_media": featured_media_id,
     }
-    resp = requests.post(_api("posts"), json=payload, auth=_auth(), timeout=30)
+    try:
+        resp = requests.post(_api("posts"), json=payload, auth=_auth(), timeout=30)
+    except requests.RequestException as e:
+        raise WordPressError(f"خطأ شبكة أثناء إنشاء المسودة: {e}")
+
     if resp.status_code not in (200, 201):
         raise WordPressError(f"فشل إنشاء المسودة: {resp.status_code} {resp.text[:300]}")
-    return resp.json()
+
+    return _safe_json_decode(resp, "إنشاء المسودة")
 
 
 def publish_rewritten_article(rewritten: dict, original_image_url: str) -> dict:
-    """
-    يقوم بكامل خطوات النشر: تنزيل الصورة -> رفعها -> إنشاء المسودة.
-    يرفع WordPressError إن لم تتوفر صورة بارزة صالحة (لا يُنشر الخبر بدونها إطلاقاً).
-    """
     image_data = download_image(original_image_url)
     if not image_data:
         raise WordPressError("لا توجد صورة بارزة صالحة - تم تجاهل الخبر وفق القاعدة الإلزامية")
