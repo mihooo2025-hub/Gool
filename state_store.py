@@ -92,31 +92,48 @@ def mark_published(*args, **kwargs) -> None:
 
 
 def add_pending_retry(*args, **kwargs) -> None:
-    """إضافة خبر لقائمة الإعادة مع مرونة تقبل سبب الفشل ومرونة المعاملات."""
+    """إضافة خبر لقائمة الإعادة كـ dict موحد يضم الرابط والعنوان لضمان اتساق البيانات."""
     state = kwargs.get("state")
-    url = kwargs.get("url")
+    candidate = kwargs.get("candidate") or kwargs.get("url")
 
+    # استخراج الوسائط غير المسمات
     for arg in args:
         if isinstance(arg, dict) and state is None:
             state = arg
-        elif isinstance(arg, (str, dict)) and url is None:
-            url = arg.get("url", "") if isinstance(arg, dict) else arg
+        elif candidate is None and not isinstance(arg, dict):
+            candidate = arg
 
     if state is None:
         state = {}
 
     if "pending_retry" not in state:
         state["pending_retry"] = []
-    if url and url not in state["pending_retry"]:
-        state["pending_retry"].append(url)
+
+    # تحويل المرشح إلى قاموس موحد
+    if isinstance(candidate, str):
+        item_dict = {"url": candidate, "listing_title": ""}
+    elif isinstance(candidate, dict):
+        item_dict = candidate
+    else:
+        item_dict = None
+
+    if item_dict and item_dict.get("url"):
+        # منع التكرار داخل قائمة الإعادة بناءً على الرابط
+        existing_urls = [
+            x["url"] if isinstance(x, dict) else x 
+            for x in state["pending_retry"]
+        ]
+        if item_dict["url"] not in existing_urls:
+            state["pending_retry"].append(item_dict)
 
 
 def add_to_retry_queue(*args, **kwargs) -> None:
-    """دالة مستعارة لإضافة الخبر إلى قائمة الإعادة متوافقة مع main.py وتستقبل 3 معاملات."""
+    """دالة مستعارة لإضافة الخبر إلى قائمة الإعادة متوافقة مع main.py."""
     add_pending_retry(*args, **kwargs)
 
 
 def remove_pending_retry(*args, **kwargs) -> None:
+    """حذف الخبر من قائمة الإعادة سواء كان مخزناً كنص أو قاموس."""
     state = kwargs.get("state")
     url = kwargs.get("url")
 
@@ -126,8 +143,11 @@ def remove_pending_retry(*args, **kwargs) -> None:
         elif isinstance(arg, (str, dict)) and url is None:
             url = arg.get("url", "") if isinstance(arg, dict) else arg
 
-    if state is not None and "pending_retry" in state and url in state["pending_retry"]:
-        state["pending_retry"].remove(url)
+    if state is not None and "pending_retry" in state and url:
+        state["pending_retry"] = [
+            item for item in state["pending_retry"]
+            if (item.get("url") if isinstance(item, dict) else item) != url
+        ]
 
 
 def remove_from_retry_queue(*args, **kwargs) -> None:
