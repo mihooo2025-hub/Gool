@@ -65,12 +65,20 @@ def is_duplicate(state: dict = None, url: str = "", title: str = "", **kwargs) -
     return is_processed(url=url, state=state)
 
 
-def mark_processed(state: dict = None, url: str = "", **kwargs) -> None:
-    """علامة الخبر كمنشور مع قبول المعاملات مسمات أو غير مسمات وبأي ترتيب."""
+def mark_processed(*args, **kwargs) -> None:
+    """علامة الخبر كمنشور مع قبول أي عدد من المعاملات."""
+    state = kwargs.get("state")
+    url = kwargs.get("url")
+
+    # استخراج الوسائط في حال التمرير غير المسمى
+    for arg in args:
+        if isinstance(arg, dict) and state is None:
+            state = arg
+        elif isinstance(arg, (str, dict)) and url is None:
+            url = arg.get("url", "") if isinstance(arg, dict) else arg
+
     if state is None:
-        state = kwargs.get("state", {})
-    if not url:
-        url = kwargs.get("url", "")
+        state = {}
 
     if "processed_urls" not in state:
         state["processed_urls"] = []
@@ -78,16 +86,24 @@ def mark_processed(state: dict = None, url: str = "", **kwargs) -> None:
         state["processed_urls"].append(url)
 
 
-def mark_published(state: dict = None, url: str = "", **kwargs) -> None:
+def mark_published(*args, **kwargs) -> None:
     """دالة مستعارة لتوسيم الخبر كمنشور متوافقة مع main.py."""
-    mark_processed(state=state, url=url, **kwargs)
+    mark_processed(*args, **kwargs)
 
 
-def add_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
+def add_pending_retry(*args, **kwargs) -> None:
+    """إضافة خبر لقائمة الإعادة مع مرونة تقبل سبب الفشل ومرونة المعاملات."""
+    state = kwargs.get("state")
+    url = kwargs.get("url")
+
+    for arg in args:
+        if isinstance(arg, dict) and state is None:
+            state = arg
+        elif isinstance(arg, (str, dict)) and url is None:
+            url = arg.get("url", "") if isinstance(arg, dict) else arg
+
     if state is None:
-        state = kwargs.get("state", {})
-    if not url:
-        url = kwargs.get("url", "")
+        state = {}
 
     if "pending_retry" not in state:
         state["pending_retry"] = []
@@ -95,33 +111,41 @@ def add_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
         state["pending_retry"].append(url)
 
 
-def add_to_retry_queue(state: dict = None, url: str = "", **kwargs) -> None:
-    add_pending_retry(state=state, url=url, **kwargs)
+def add_to_retry_queue(*args, **kwargs) -> None:
+    """دالة مستعارة لإضافة الخبر إلى قائمة الإعادة متوافقة مع main.py وتستقبل 3 معاملات."""
+    add_pending_retry(*args, **kwargs)
 
 
-def remove_pending_retry(url: str = "", state: dict = None, **kwargs) -> None:
-    if state is None:
-        state = kwargs.get("state", {})
-    if not url:
-        url = kwargs.get("url", "")
+def remove_pending_retry(*args, **kwargs) -> None:
+    state = kwargs.get("state")
+    url = kwargs.get("url")
 
-    if "pending_retry" in state and url in state["pending_retry"]:
+    for arg in args:
+        if isinstance(arg, dict) and state is None:
+            state = arg
+        elif isinstance(arg, (str, dict)) and url is None:
+            url = arg.get("url", "") if isinstance(arg, dict) else arg
+
+    if state is not None and "pending_retry" in state and url in state["pending_retry"]:
         state["pending_retry"].remove(url)
 
 
-def remove_from_retry_queue(state: dict = None, url: str = "", **kwargs) -> None:
+def remove_from_retry_queue(*args, **kwargs) -> None:
     """دالة مستعارة لحذف الخبر من قائمة الانتظار متوافقة مع main.py."""
-    if state is None:
-        state = kwargs.get("state", {})
-    if not url:
-        url = kwargs.get("url", "")
-    remove_pending_retry(url=url, state=state, **kwargs)
+    remove_pending_retry(*args, **kwargs)
 
 
-def pop_retry_queue(state: dict = None, **kwargs) -> list:
+def pop_retry_queue(*args, **kwargs) -> list:
     """استخراج قائمة العناصر المنتظرة لإعادة المحاولة وإفراغها من الحالة."""
+    state = kwargs.get("state")
+    if state is None and args:
+        for arg in args:
+            if isinstance(arg, dict):
+                state = arg
+                break
     if state is None:
-        state = kwargs.get("state", {})
+        state = {}
+
     retry_list = list(state.get("pending_retry", []))
     state["pending_retry"] = []
     return retry_list
