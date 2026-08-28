@@ -8,7 +8,7 @@ main.py
 2) إضافة الأخبار التي فشلت في الدورات السابقة لإعادة محاولتها.
 3) استبعاد المكرر (بالرابط أو بتشابه العنوان).
 4) لكل خبر: جلب النص + الصورة -> إعادة الصياغة عبر Gemini -> النشر كمسودة في ووردبريس.
-5) الأخبار التي تفشل معالجتها تُحفظ لإعادة المحاولة بالدورة القادمة.
+5) الأخبار ذات المحتوى التالف تُستبعد نهائياً دون إعادة المحاولة.
 6) إرسال تقرير نهائي إلى تيليجرام.
 """
 
@@ -57,19 +57,22 @@ def process_one(candidate: dict, state: dict, published_report: list, failed_rep
         article = scraper_goal.fetch_article(url)
     except Exception as e:
         print(f"  فشل جلب المقال: {e}")
-        state_store.add_to_retry_queue(state, candidate, f"فشل جلب المقال: {e}")
-        failed_report.append({"listing_title": listing_title, "url": url, "reason": "فشل جلب الصفحة"})
+        # الاستبعاد النهائيات للروابط المكسورة لمنع استمرار تكرارها
+        state_store.remove_from_retry_queue(state, url)
+        failed_report.append({"listing_title": listing_title, "url": url, "reason": "فشل جلب الصفحة (تم استبعاده)"})
         return
 
     if not article.get("title") or not article.get("body_text"):
         print("  تعذّر استخراج عنوان أو نص كافٍ من الصفحة")
-        state_store.add_to_retry_queue(state, candidate, "محتوى غير مكتمل")
-        failed_report.append({"listing_title": listing_title, "url": url, "reason": "محتوى غير مكتمل"})
+        # المحتوى غير المكتمل يُستبعد نهائياً ولا يُعاد للقائمة
+        state_store.remove_from_retry_queue(state, url)
+        failed_report.append({"listing_title": listing_title, "url": url, "reason": "محتوى غير مكتمل (تم استبعاده)"})
         return
 
     # تحقق تكرار إضافي بالعنوان الحقيقي المستخرج من الصفحة
     if state_store.is_duplicate(state, url, article["title"]):
         print("  تم تجاهله: خبر مكرر")
+        state_store.remove_from_retry_queue(state, url)
         return
 
     # 2) إعادة الصياغة عبر Gemini
@@ -81,8 +84,7 @@ def process_one(candidate: dict, state: dict, published_report: list, failed_rep
         failed_report.append({"listing_title": article.get("title", listing_title), "url": url, "reason": "فشلت إعادة الصياغة"})
         return
     finally:
-        # توقف مؤقت لتجنب تجاوز معدل الطلبات 429 Rate Limit
-        time.sleep(12)
+        time.sleep(10)
 
     # 3) النشر في ووردبريس (يشترط وجود صورة بارزة صالحة)
     try:
@@ -91,6 +93,7 @@ def process_one(candidate: dict, state: dict, published_report: list, failed_rep
         msg = str(e)
         if "صورة بارزة" in msg:
             print(f"  تم تجاهل الخبر نهائياً: {msg}")
+            state_store.remove_from_retry_queue(state, url)
         else:
             print(f"  فشل النشر: {msg}")
             state_store.add_to_retry_queue(state, candidate, f"فشل النشر: {msg}")
@@ -132,8 +135,8 @@ def run() -> None:
 
     state = state_store.load_state()
 
-    # تحديد الفحص لآخر 3 ساعات وبحد أقصى 5 أخبار جُدد للحد من الضغط على API
-    fresh_candidates = scraper_goal.get_recent_article_links(window_hours=3, max_limit=5)
+    # جلب الأخبار الصادرة في آخر 3 ساعات حتى 15 خبراً
+    fresh_candidates = scraper_goal.get_recent_article_links(window_hours=3, max_limit=15)
     retry_candidates = state_store.pop_retry_queue(state)
 
     print(f"أخبار جديدة ضمن آخر 3 ساعات: {len(fresh_candidates)}")
@@ -144,7 +147,7 @@ def run() -> None:
     to_process = [
         c for c in all_candidates
         if not state_store.is_duplicate(state, c["url"], c.get("listing_title", ""))
-    ][:8]  # معالجة 8 أخبار كحد أقصى في كل شوط لضمان عدم استهلاك الحصة
+    ][:10]
 
     print(f"سيتم معالجة {len(to_process)} خبر في هذه الدورة")
 
