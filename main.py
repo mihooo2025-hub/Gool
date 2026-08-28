@@ -121,10 +121,11 @@ def run() -> None:
 
     state = state_store.load_state()
 
-    fresh_candidates = scraper_goal.get_recent_article_links()
+    # تحديد الفحص لآخر 3 ساعات حصراً
+    fresh_candidates = scraper_goal.get_recent_article_links(window_hours=3)
     retry_candidates = state_store.pop_retry_queue(state)
 
-    print(f"أخبار جديدة ضمن آخر {config.RECENCY_WINDOW_HOURS} ساعات: {len(fresh_candidates)}")
+    print(f"أخبار جديدة ضمن آخر 3 ساعات: {len(fresh_candidates)}")
     print(f"أخبار معادة من قائمة الانتظار: {len(retry_candidates)}")
 
     all_candidates = _dedupe_candidates(retry_candidates + fresh_candidates)
