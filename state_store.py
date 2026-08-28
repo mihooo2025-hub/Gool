@@ -50,6 +50,11 @@ def is_processed(url: str, state: dict) -> bool:
     return url in state.get("processed_urls", [])
 
 
+def is_duplicate(state: dict, url: str, title: str = "") -> bool:
+    """التحقق مما إذا كان الرابط قد تم معالجته سابقاً لمنع التكرار."""
+    return is_processed(url, state)
+
+
 def mark_processed(url: str, state: dict) -> None:
     if "processed_urls" not in state:
         state["processed_urls"] = []
