@@ -23,13 +23,24 @@ import wordpress_client
 import telegram_notify
 
 
+def _normalize_candidate(item) -> dict:
+    """تحويل أي عنصر (نص أو قاموس) إلى شكل قاموس موحد يحتوي على url."""
+    if isinstance(item, str):
+        return {"url": item, "listing_title": ""}
+    elif isinstance(item, dict):
+        return item
+    return {"url": str(item), "listing_title": ""}
+
+
 def _dedupe_candidates(items: list) -> list:
     seen = set()
     unique = []
-    for item in items:
-        if item["url"] in seen:
+    for raw_item in items:
+        item = _normalize_candidate(raw_item)
+        url = item.get("url")
+        if not url or url in seen:
             continue
-        seen.add(item["url"])
+        seen.add(url)
         unique.append(item)
     return unique
 
