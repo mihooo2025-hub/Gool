@@ -4,22 +4,19 @@ scraper_goal.py
 مسؤول فقط عن جلب الأخبار من https://www.goal.com/ar
 
 آلية العمل المحدثة:
-1) البحث عن جميع روابط المقالات في الصفحات المصدر.
-2) استخراج الوقت النسبي أو تاريخ النشر عبر الفحص الهيكلي والميتاداتا لتفادي تغيرات التنسيق.
-3) فلترة المقالات بناءً على نافذة الساعات المحددة (RECENCY_WINDOW_HOURS).
-4) استخراج العنوان الأصلي، نص الخبر الكامل، ورابط الصورة البارزة بشكل موثوق.
+1) جلب قائمة الأخبار الحديثة وتحديد وقتها.
+2) استخراج الصورة البارزة **الخاصة بالمقال حصرية** ومنع تكرار الصور العامة/الافتراضية.
+3) استخراج العنوان ونصر الخبر بدقة.
 """
 
 import re
 import requests
-from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 
 import config
 
 ARTICLE_URL_RE = re.compile(r"^https://www\.goal\.com/ar/[^/]+/[^/]+/[A-Za-z0-9_\-]+$")
 
-# نمط عبارات الوقت النسبي بالعربية
 TIME_PATTERN = re.compile(
     r"(?:الآن|قبل\s+(?:"
     r"(?P<min_single>دقيقة واحدة)|"
@@ -32,9 +29,27 @@ TIME_PATTERN = re.compile(
     re.UNICODE,
 )
 
+# قائمة سوداء موسعة للصور العامة/الافتراضية المكررة بموقع Goal
+_GENERIC_IMAGE_MARKERS = (
+    "brand-logo",
+    "lcp-hack-background",
+    "logo",
+    "sprite",
+    "favicon",
+    "placeholder",
+    "default",
+    "avatar",
+    "app-icon",
+    "share-card",
+    "og-image",
+    "goal-logo",
+    "fallback",
+    "assets.goal.com/v3/assets",  # شعارات الأصول الافتراضية
+    "images.outbrain.com",
+)
+
 
 def _relative_time_to_minutes(text: str):
-    """يحوّل عبارة الوقت النسبي العربية إلى عدد الدقائق."""
     if not text:
         return None
     m = TIME_PATTERN.search(text.strip())
@@ -65,11 +80,14 @@ def _fetch(url: str) -> str:
     return resp.text
 
 
+def _is_generic_image(url: str) -> bool:
+    if not url:
+        return True
+    low = url.lower()
+    return any(marker in low for marker in _GENERIC_IMAGE_MARKERS)
+
+
 def get_recent_article_links(window_hours: int = None) -> list:
-    """
-    يعيد قائمة بالأخبار الحديثة ضمن نافذة الساعات المحددة:
-    [{"url": ..., "listing_title": ..., "minutes_ago": ...}, ...]
-    """
     window_hours = window_hours or config.RECENCY_WINDOW_HOURS
     window_minutes = window_hours * 60
 
@@ -88,7 +106,6 @@ def get_recent_article_links(window_hours: int = None) -> list:
             if href.startswith("/"):
                 href = config.SOURCE_BASE_URL + href
             
-            # تنظيف الرابط من أي معاملات استعلام (Query parameters)
             href = href.split("?")[0].split("#")[0]
 
             if not ARTICLE_URL_RE.match(href):
@@ -100,21 +117,18 @@ def get_recent_article_links(window_hours: int = None) -> list:
 
             minutes_ago = _relative_time_to_minutes(text)
             
-            # في حال لم يستخرج الوقت من نص الرابط المباشر، يتم الفحص في الوسوم القريبة (مثل time أو span)
             if minutes_ago is None:
                 parent = a.find_parent(["article", "div", "li"])
                 if parent:
                     parent_text = parent.get_text(" ", strip=True)
                     minutes_ago = _relative_time_to_minutes(parent_text)
 
-            # إذا استمر عدم وجود وقت محدد، يفترض السكربت أنه ضمن النافذة لمعالجته وفحصه لاحقاً
             if minutes_ago is None:
                 minutes_ago = 30 
 
             if minutes_ago > window_minutes:
                 continue
 
-            # تنظيف العنوان المستخرج من العبارات الزمنية
             clean_title = TIME_PATTERN.sub("", text).strip()
             if not clean_title or len(clean_title) < 10:
                 clean_title = text
@@ -129,90 +143,50 @@ def get_recent_article_links(window_hours: int = None) -> list:
     return sorted(found.values(), key=lambda x: x["minutes_ago"])
 
 
-# كلمات مفتاحية تدل على أن الصورة "عامة"
-_GENERIC_IMAGE_MARKERS = (
-    "brand-logo",
-    "lcp-hack-background",
-    "logo",
-    "sprite",
-    "favicon",
-    "placeholder",
-    "default",
-    "avatar",
-    "app-icon",
-    "share-card",
-    "og-image",
-    "goal-logo",
-)
-
-
-def _is_generic_image(url: str) -> bool:
-    if not url:
-        return True
-    low = url.lower()
-    return any(marker in low for marker in _GENERIC_IMAGE_MARKERS)
-
-
 def _extract_featured_image(soup: BeautifulSoup, article_tag) -> str:
     """
-    نظام استخراج الصورة البارزة متعدد المستويات.
+    استخراج الصورة الفريدة للخبر باستبعاد تام للصور العامة والافتراضية.
     """
-    # المستوى 1: وسم og:image أو twitter:image في الميتاداتا
-    for prop in ("og:image", "og:image:secure_url", "twitter:image"):
-        meta = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
-        if meta and meta.get("content") and not _is_generic_image(meta["content"]):
-            return meta["content"]
-
-    # المستوى 2: صورة داخل figure تقع بالقرب من h1
+    # المستوى 1: البحث عن صورة في جسم المقال الرئيسي (الـ Figure الأول تحت الـ H1)
     h1 = soup.find("h1")
     if h1:
-        node = h1
-        steps = 0
-        while node is not None and steps < 40:
-            node = node.find_next(["figure", "picture", "img"])
-            steps += 1
-            if node is None:
-                break
-            if node.name in ("figure", "picture"):
-                img = node.find("img")
-            else:
-                img = node
-            if not img:
-                continue
-            src = img.get("src") or img.get("data-src") or img.get("data-original")
-            if src and not _is_generic_image(src):
-                return src
+        parent = h1.find_parent(["article", "main", "div"])
+        if parent:
+            for img in parent.find_all("img"):
+                # البحث في كافة الخصائص المحتملة للصورة
+                src = img.get("src") or img.get("data-src") or img.get("srcset") or img.get("data-srcset")
+                if srcset := img.get("srcset"):
+                    src = srcset.split(",")[0].split(" ")[0]
+                
+                if src and not _is_generic_image(src):
+                    return src
 
-    # المستوى 3: أول صورة داخل جسم المقال
+    # المستوى 2: البحث بداخل وسم article بالتحديد
     if article_tag:
         for img in article_tag.find_all("img"):
             src = img.get("src") or img.get("data-src") or img.get("data-original")
             if not src or _is_generic_image(src):
                 continue
-            try:
-                width = int(img.get("width", 0))
-                height = int(img.get("height", 0))
-                if 0 < width < 150 or 0 < height < 150:
-                    continue
-            except (TypeError, ValueError):
-                pass
             return src
+
+    # المستوى 3: ميتاداتا og:image بشرط ألا تكون صورة افتراضية للموقع
+    for prop in ("og:image", "twitter:image"):
+        meta = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
+        if meta and meta.get("content"):
+            img_url = meta["content"]
+            if not _is_generic_image(img_url):
+                return img_url
 
     return None
 
 
 def fetch_article(url: str) -> dict:
-    """
-    يفتح صفحة الخبر ويستخرج: العنوان الأصلي، نص الخبر الكامل، ورابط الصورة البارزة.
-    """
     html = _fetch(url)
     soup = BeautifulSoup(html, "html.parser")
 
-    # استخراج العنوان
     title_tag = soup.find("h1")
     title = title_tag.get_text(" ", strip=True) if title_tag else None
 
-    # استخراج نص المقال
     article_tag = soup.find("article") or soup.find("main") or soup.body
     paragraphs = []
     if article_tag:
