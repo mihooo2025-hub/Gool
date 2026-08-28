@@ -67,3 +67,10 @@ def add_pending_retry(url: str, state: dict) -> None:
 def remove_pending_retry(url: str, state: dict) -> None:
     if "pending_retry" in state and url in state["pending_retry"]:
         state["pending_retry"].remove(url)
+
+
+def pop_retry_queue(state: dict) -> list:
+    """استخراج قائمة العناصر المنتظرة لإعادة المحاولة وإفراغها من الحالة."""
+    retry_list = list(state.get("pending_retry", []))
+    state["pending_retry"] = []
+    return retry_list
