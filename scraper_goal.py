@@ -4,9 +4,9 @@ scraper_goal.py
 مسؤول فقط عن جلب الأخبار من https://www.goal.com/ar
 
 آلية العمل المحدثة:
-1) جلب قائمة الأخبار الحديثة وتحديد وقتها.
-2) استخراج الصورة البارزة **الخاصة بالمقال حصرية** ومنع تكرار الصور العامة/الافتراضية.
-3) استخراج العنوان ونصر الخبر بدقة.
+1) جلب قائمة الأخبار الحديثة وتحديد وقتها بدقة.
+2) استبعاد أي خبر لا يحمل توقيت زمني واضح لمنع جلب الأخبار القديمة.
+3) حد أقصى لعدد الأخبار لضمان عدم تجاوز وقت GitHub Actions.
 """
 
 import re
@@ -44,7 +44,7 @@ _GENERIC_IMAGE_MARKERS = (
     "og-image",
     "goal-logo",
     "fallback",
-    "assets.goal.com/v3/assets",  # شعارات الأصول الافتراضية
+    "assets.goal.com/v3/assets",
     "images.outbrain.com",
 )
 
@@ -87,8 +87,9 @@ def _is_generic_image(url: str) -> bool:
     return any(marker in low for marker in _GENERIC_IMAGE_MARKERS)
 
 
-def get_recent_article_links(window_hours: int = None) -> list:
-    window_hours = window_hours or config.RECENCY_WINDOW_HOURS
+def get_recent_article_links(window_hours: int = 3, max_limit: int = 15) -> list:
+    """جلب الأخبار الصادرة خلال window_hours مع حد أقصى max_limit لمنع التراكم."""
+    window_hours = window_hours or getattr(config, "RECENCY_WINDOW_HOURS", 3)
     window_minutes = window_hours * 60
 
     found = {}
@@ -112,9 +113,6 @@ def get_recent_article_links(window_hours: int = None) -> list:
                 continue
 
             text = a.get_text(" ", strip=True)
-            if not text:
-                continue
-
             minutes_ago = _relative_time_to_minutes(text)
             
             if minutes_ago is None:
@@ -123,8 +121,9 @@ def get_recent_article_links(window_hours: int = None) -> list:
                     parent_text = parent.get_text(" ", strip=True)
                     minutes_ago = _relative_time_to_minutes(parent_text)
 
+            # تعديل جوهري: استبعاد الرابط إن لم نتمكن من تحديد توقيته الصريح
             if minutes_ago is None:
-                minutes_ago = 30 
+                continue
 
             if minutes_ago > window_minutes:
                 continue
@@ -140,20 +139,17 @@ def get_recent_article_links(window_hours: int = None) -> list:
                     "minutes_ago": minutes_ago,
                 }
 
-    return sorted(found.values(), key=lambda x: x["minutes_ago"])
+    sorted_articles = sorted(found.values(), key=lambda x: x["minutes_ago"])
+    # إرجاع عدد أقصى محدد من الأخبار فقط لكل دورة
+    return sorted_articles[:max_limit]
 
 
 def _extract_featured_image(soup: BeautifulSoup, article_tag) -> str:
-    """
-    استخراج الصورة الفريدة للخبر باستبعاد تام للصور العامة والافتراضية.
-    """
-    # المستوى 1: البحث عن صورة في جسم المقال الرئيسي (الـ Figure الأول تحت الـ H1)
     h1 = soup.find("h1")
     if h1:
         parent = h1.find_parent(["article", "main", "div"])
         if parent:
             for img in parent.find_all("img"):
-                # البحث في كافة الخصائص المحتملة للصورة
                 src = img.get("src") or img.get("data-src") or img.get("srcset") or img.get("data-srcset")
                 if srcset := img.get("srcset"):
                     src = srcset.split(",")[0].split(" ")[0]
@@ -161,7 +157,6 @@ def _extract_featured_image(soup: BeautifulSoup, article_tag) -> str:
                 if src and not _is_generic_image(src):
                     return src
 
-    # المستوى 2: البحث بداخل وسم article بالتحديد
     if article_tag:
         for img in article_tag.find_all("img"):
             src = img.get("src") or img.get("data-src") or img.get("data-original")
@@ -169,7 +164,6 @@ def _extract_featured_image(soup: BeautifulSoup, article_tag) -> str:
                 continue
             return src
 
-    # المستوى 3: ميتاداتا og:image بشرط ألا تكون صورة افتراضية للموقع
     for prop in ("og:image", "twitter:image"):
         meta = soup.find("meta", property=prop) or soup.find("meta", attrs={"name": prop})
         if meta and meta.get("content"):
