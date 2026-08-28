@@ -62,6 +62,11 @@ def mark_processed(url: str, state: dict) -> None:
         state["processed_urls"].append(url)
 
 
+def mark_published(url: str, state: dict) -> None:
+    """دالة مستعارة لتوسيم الخبر كمنشور متوافقة مع main.py."""
+    mark_processed(url, state)
+
+
 def add_pending_retry(url: str, state: dict) -> None:
     if "pending_retry" not in state:
         state["pending_retry"] = []
