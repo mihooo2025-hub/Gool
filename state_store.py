@@ -5,8 +5,7 @@ state_store.py
 1) الأخبار المنشورة بنجاح سابقاً (لمنع التكرار) - عبر تجزئة الرابط + العنوان.
 2) قائمة انتظار للأخبار التي فشلت معالجتها، لإعادة المحاولة في الدورة التالية.
 
-هذا الملف نفسه يُحدَّث ويُحفظ (commit) داخل مستودع GitHub بعد كل تشغيل،
-حتى تبقى الحالة محفوظة بين كل تشغيل مجدول وآخر.
+تم تحديثه للتعامل الآمن مع قراءة/كتابة ملفات JSON التالفة أو الفارغة دون انهيار السكربت.
 """
 
 import json
@@ -29,11 +28,21 @@ def _url_hash(url: str) -> str:
 def load_state() -> dict:
     if not os.path.exists(config.STATE_FILE):
         return {"published": [], "pending_retry": []}
+    
     try:
         with open(config.STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, FileNotFoundError):
+            content = f.read().strip()
+            if not content:
+                # إذا كان الملف فارغاً تماماً
+                return {"published": [], "pending_retry": []}
+            data = json.loads(content)
+    except Exception as e:
+        print(f"تحذير: تعذرت قراءة ملف الحالة ({e})، سيتم البدء بحالة جديدة آمنة.")
         data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
     data.setdefault("published", [])
     data.setdefault("pending_retry", [])
     return data
@@ -41,6 +50,7 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     os.makedirs(config.DATA_DIR, exist_ok=True)
+    
     # تنظيف السجلات القديمة جداً حتى لا يتضخم الملف إلى الأبد
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.KEEP_HISTORY_DAYS)
     cleaned = []
@@ -54,21 +64,35 @@ def save_state(state: dict) -> None:
             cleaned.append(item)
     state["published"] = cleaned
 
-    with open(config.STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+    temp_file = f"{config.STATE_FILE}.tmp"
+    try:
+        # الكتابة في ملف مؤقت أولاً ثم استبداله لضمان عدم تلف الملف الرئيسي إذا حدث انقطاع مفاجئ
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(temp_file, config.STATE_FILE)
+    except Exception as e:
+        print(f"خطأ أثناء حفظ الحالة: {e}")
 
 
 def is_duplicate(state: dict, url: str, title: str) -> bool:
     """يتحقق من التكرار عبر تطابق الرابط أولاً، ثم تشابه العنوان الضبابي."""
+    if not url:
+        return False
+        
     h = _url_hash(url)
+    clean_title = title.strip() if title else ""
+
     for item in state.get("published", []):
-        if item.get("url_hash") == h:
+        if item.get("url_hash") == h or item.get("url") == url:
             return True
-        similarity = difflib.SequenceMatcher(
-            None, item.get("title", ""), title
-        ).ratio()
-        if similarity >= config.TITLE_SIMILARITY_THRESHOLD:
-            return True
+        
+        if clean_title and item.get("title"):
+            similarity = difflib.SequenceMatcher(
+                None, item.get("title", "").strip(), clean_title
+            ).ratio()
+            if similarity >= config.TITLE_SIMILARITY_THRESHOLD:
+                return True
+                
     return False
 
 
@@ -87,13 +111,13 @@ def mark_published(state: dict, url: str, title: str, new_title: str, wp_post_id
 
 def add_to_retry_queue(state: dict, article: dict, reason: str) -> None:
     """يضيف خبراً فشلت معالجته إلى قائمة الانتظار لإعادة المحاولة بالدورة القادمة."""
-    existing = {a["url"] for a in state.get("pending_retry", [])}
-    if article["url"] in existing:
+    existing = {a["url"] for a in state.get("pending_retry", []) if "url" in a}
+    if article.get("url") in existing:
         return
-    article = dict(article)
-    article["fail_reason"] = reason
-    article["queued_at"] = _now_iso()
-    state.setdefault("pending_retry", []).append(article)
+    item = dict(article)
+    item["fail_reason"] = reason
+    item["queued_at"] = _now_iso()
+    state.setdefault("pending_retry", []).append(item)
 
 
 def pop_retry_queue(state: dict) -> list:
@@ -105,5 +129,5 @@ def pop_retry_queue(state: dict) -> list:
 
 def remove_from_retry_queue(state: dict, url: str) -> None:
     state["pending_retry"] = [
-        a for a in state.get("pending_retry", []) if a["url"] != url
+        a for a in state.get("pending_retry", []) if a.get("url") != url
     ]
