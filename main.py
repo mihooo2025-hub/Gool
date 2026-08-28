@@ -8,7 +8,7 @@ main.py
 2) إضافة الأخبار التي فشلت في الدورات السابقة لإعادة محاولتها.
 3) استبعاد المكرر (بالرابط أو بتشابه العنوان).
 4) لكل خبر: جلب النص + الصورة -> إعادة الصياغة عبر Gemini -> النشر كمسودة في ووردبريس.
-5) الأخبار التي تفشل معالجتها (لأسباب مؤقتة) تُحفظ لإعادة المحاولة بالدورة القادمة.
+5) الأخبار التي تفشل معالجتها تُحفظ لإعادة المحاولة بالدورة القادمة.
 6) إرسال تقرير نهائي إلى تيليجرام.
 """
 
@@ -47,7 +47,7 @@ def _dedupe_candidates(items: list) -> list:
 
 def process_one(candidate: dict, state: dict, published_report: list, failed_report: list) -> None:
     url = candidate["url"]
-    listing_title = candidate.get("listing_title", "")
+    listing_title = candidate.get("listing_title", "") or "خبر بدون عنوان"
 
     print(f"\n--- معالجة: {listing_title[:60]} ---")
     print(url)
@@ -67,7 +67,7 @@ def process_one(candidate: dict, state: dict, published_report: list, failed_rep
         failed_report.append({"listing_title": listing_title, "url": url, "reason": "محتوى غير مكتمل"})
         return
 
-    # تحقق تكرار إضافي بالعنوان الحقيقي المستخرج من الصفحة (وليس فقط عنوان القائمة)
+    # تحقق تكرار إضافي بالعنوان الحقيقي المستخرج من الصفحة
     if state_store.is_duplicate(state, url, article["title"]):
         print("  تم تجاهله: خبر مكرر")
         return
@@ -77,11 +77,12 @@ def process_one(candidate: dict, state: dict, published_report: list, failed_rep
         rewritten = rewriter_gemini.rewrite_article(article)
     except rewriter_gemini.RewriteError as e:
         print(f"  فشلت إعادة الصياغة: {e}")
-        state_store.add_to_retry_queue(state, candidate, "فشلت إعادة الصياغة (نفاد الحصة أو خطأ)")
-        failed_report.append({"listing_title": listing_title, "url": url, "reason": "فشلت إعادة الصياغة"})
+        state_store.add_to_retry_queue(state, candidate, "فشلت إعادة الصياغة (تجاوز الحصة أو خطأ)")
+        failed_report.append({"listing_title": article.get("title", listing_title), "url": url, "reason": "فشلت إعادة الصياغة"})
         return
     finally:
-        rewriter_gemini.sleep_between_rewrites()
+        # توقف مؤقت لتجنب تجاوز معدل الطلبات 429 Rate Limit
+        time.sleep(12)
 
     # 3) النشر في ووردبريس (يشترط وجود صورة بارزة صالحة)
     try:
@@ -89,12 +90,11 @@ def process_one(candidate: dict, state: dict, published_report: list, failed_rep
     except wordpress_client.WordPressError as e:
         msg = str(e)
         if "صورة بارزة" in msg:
-            # قاعدة إلزامية: لا صورة = تجاهل الخبر نهائياً (بدون إعادة محاولة)
             print(f"  تم تجاهل الخبر نهائياً: {msg}")
         else:
             print(f"  فشل النشر: {msg}")
             state_store.add_to_retry_queue(state, candidate, f"فشل النشر: {msg}")
-            failed_report.append({"listing_title": listing_title, "url": url, "reason": "فشل النشر في ووردبريس"})
+            failed_report.append({"listing_title": article.get("title", listing_title), "url": url, "reason": "فشل النشر في ووردبريس"})
         return
     finally:
         time.sleep(config.DELAY_BETWEEN_PUBLISHES_SECONDS)
@@ -132,8 +132,8 @@ def run() -> None:
 
     state = state_store.load_state()
 
-    # تحديد الفحص لآخر 3 ساعات حصراً
-    fresh_candidates = scraper_goal.get_recent_article_links(window_hours=3)
+    # تحديد الفحص لآخر 3 ساعات وبحد أقصى 5 أخبار جُدد للحد من الضغط على API
+    fresh_candidates = scraper_goal.get_recent_article_links(window_hours=3, max_limit=5)
     retry_candidates = state_store.pop_retry_queue(state)
 
     print(f"أخبار جديدة ضمن آخر 3 ساعات: {len(fresh_candidates)}")
@@ -141,11 +141,10 @@ def run() -> None:
 
     all_candidates = _dedupe_candidates(retry_candidates + fresh_candidates)
 
-    # استبعاد ما هو مكرر أصلاً في السجل المنشور (بالرابط أو تشابه عنوان القائمة)
     to_process = [
         c for c in all_candidates
         if not state_store.is_duplicate(state, c["url"], c.get("listing_title", ""))
-    ]
+    ][:8]  # معالجة 8 أخبار كحد أقصى في كل شوط لضمان عدم استهلاك الحصة
 
     print(f"سيتم معالجة {len(to_process)} خبر في هذه الدورة")
 
@@ -154,7 +153,7 @@ def run() -> None:
 
     for candidate in to_process:
         process_one(candidate, state, published_report, failed_report)
-        state_store.save_state(state)  # حفظ تدريجي حتى لا تُفقد الحالة عند انقطاع مفاجئ
+        state_store.save_state(state)
 
     state_store.save_state(state)
 
