@@ -47,6 +47,8 @@ def save_state(state: dict) -> None:
 
 
 def is_processed(url: str, state: dict) -> bool:
+    if isinstance(url, dict) and isinstance(state, str):
+        url, state = state, url
     return url in state.get("processed_urls", [])
 
 
@@ -55,16 +57,22 @@ def is_duplicate(state: dict, url: str, title: str = "") -> bool:
     return is_processed(url, state)
 
 
-def mark_processed(url: str, state: dict) -> None:
+def mark_processed(arg1, arg2) -> None:
+    """حفظ الرابط كمنشور مع دعم مرن لترتيب الوسائط (url, state) أو (state, url)."""
+    if isinstance(arg1, dict):
+        state, url = arg1, arg2
+    else:
+        url, state = arg1, arg2
+
     if "processed_urls" not in state:
         state["processed_urls"] = []
     if url not in state["processed_urls"]:
         state["processed_urls"].append(url)
 
 
-def mark_published(url: str, state: dict) -> None:
+def mark_published(arg1, arg2) -> None:
     """دالة مستعارة لتوسيم الخبر كمنشور متوافقة مع main.py."""
-    mark_processed(url, state)
+    mark_processed(arg1, arg2)
 
 
 def add_pending_retry(url: str, state: dict) -> None:
