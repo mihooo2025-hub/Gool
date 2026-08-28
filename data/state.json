@@ -323,7 +323,7 @@
   ],
   "pending_retry": [
     {
-      "url": "محتوى غير مكتمل",
+      "url": "فشل جلب المقال: Failed to parse: محتوى غير مكتمل",
       "listing_title": ""
     }
   ],
