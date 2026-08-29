@@ -321,7 +321,16 @@
       "processed_at": "2026-08-28T02:16:02.397144+00:00"
     }
   ],
-  "pending_retry": [],
+  "pending_retry": [
+    {
+      "url": "فشل النشر: فشل رفع الصورة البارزة: 403 <!DOCTYPE html>\n<html>\n<head>\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1, shrink-to-fit=no\">\n    <meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">\n    <meta http-equiv=\"Content-Type\" content=\"text/html; charset=windows-1252\">\n    <title>Bot Verification</title>\n    <s",
+      "listing_title": ""
+    },
+    {
+      "url": "فشل النشر: فشل رفع الصورة البارزة: 403 <!DOCTYPE html>\n<html style=\"height:100%\">\n<head>\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, shrink-to-fit=no\" />\n<title> 403 Forbidden\r\n</title><style>@media (prefers-color-scheme:dark){body{background-color:#000!important}}</style></head>\n<body style=\"color: #444; margin:0",
+      "listing_title": ""
+    }
+  ],
   "processed_urls": [
     "https://www.goal.com/ar/%D8%A7%D9%84%D9%82%D9%88%D8%A7%D8%A6%D9%85/%D9%83%D8%A7%D8%A8%D9%88%D8%B3-%D9%85%D8%AD%D9%85%D8%AF-%D8%B5%D9%84%D8%A7%D8%AD-%D9%81%D9%8A-%D8%AA%D8%B1%D9%83%D9%8A%D8%A7-%D9%85%D8%B3%D8%AA%D9%85%D8%B1--%D8%A7%D8%B3%D8%AA%D9%82%D8%A7%D9%84%D8%A9-%D9%85%D8%AF%D8%B1%D8%A8-%D8%B7%D8%B1%D8%A7%D8%A8%D8%B2%D9%88%D9%86-%D8%B3%D8%A8%D9%88%D8%B1-%D9%88%D8%A7%D9%84%D9%86%D8%A7%D8%AF%D9%8A-%D9%8A%D8%B1%D9%81%D8%B6/bltca2b64b145873a63",
     "https://www.goal.com/ar/%D8%A7%D9%84%D9%82%D9%88%D8%A7%D8%A6%D9%85/%D8%A7%D9%95%D9%86%D8%AA%D8%B1-%D9%85%D9%8A%D8%A7%D9%85%D9%8A-%D9%83%D9%8A%D9%84%D9%8A-%D8%AC%D9%88%D9%86%D8%B2%D8%A7%D9%84%D9%8A%D8%B3-%D9%84%D9%8A%D9%88%D9%86%D9%8A%D9%84-%D9%85%D9%8A%D8%B3%D9%8A-%D8%A7%D9%84%D8%AF%D9%88%D8%B1%D9%8A-%D8%A7%D9%84%D8%A7%D9%94%D9%85%D8%B1%D9%8A%D9%83%D9%8A/blt59e7edf8341fdf80",
