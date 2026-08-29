@@ -16,14 +16,18 @@ from urllib.parse import urljoin
 
 import config
 
-ARTICLE_URL_RE = re.compile(r"^https://www\.goal\.com/ar/[^/]+/[^/]+/[A-Za-z0-9_\-]+$")
+# تعديل النمط ليشمل مختلف أنواع صفحات المقالات في goal.com/ar مثل الأخبار والقوائم
+ARTICLE_URL_RE = re.compile(
+    r"^https://www\.goal\.com/ar/(?:[^\n?#]+/)+[A-Za-z0-9_\-]+$"
+)
 
+# تعزيز نمط الوقت للالتقاط الدقيق لكافة صيغ الدقائق والساعات باللغة العربية
 TIME_PATTERN = re.compile(
     r"(?:الآن|قبل\s+(?:"
-    r"(?P<min_single>دقيقة واحدة)|"
+    r"(?P<min_single>دقيقة(?:\s+واحدة)?)|"
     r"(?P<min_dual>دقيقتين)|"
     r"(?P<min_num>\d+)\s+(?:دقائق|دقيقة)|"
-    r"(?P<hour_single>ساعة واحدة)|"
+    r"(?P<hour_single>ساعة(?:\s+واحدة)?)|"
     r"(?P<hour_dual>ساعتين)|"
     r"(?P<hour_num>\d+)\s+(?:ساعات|ساعة)"
     r"))",
@@ -131,25 +135,31 @@ def get_recent_article_links(window_hours: int = 3, max_limit: int = 15) -> list
 
             href = href.split("?")[0].split("#")[0]
 
-            if not ARTICLE_URL_RE.match(href):
+            # التأكد من أن الرابط يتبع النطاق واللغة العربية المطلوبة
+            if not href.startswith("https://www.goal.com/ar/") or not ARTICLE_URL_RE.match(href):
                 continue
 
             text = a.get_text(" ", strip=True)
             minutes_ago = _relative_time_to_minutes(text)
 
+            # البحث عن التوقيت في الآباء القريبين والوسوم الزمنية إن لم يوجد بالرابط مباشرة
             if minutes_ago is None:
-                parent = a.find_parent(
-                    ["article", "div", "li"]
-                )
+                curr = a
+                for _ in range(4):
+                    curr = curr.parent
+                    if not curr or curr.name == "[document]":
+                        break
+                    
+                    time_tag = curr.find("time")
+                    if time_tag:
+                        minutes_ago = _relative_time_to_minutes(time_tag.get_text(" ", strip=True))
+                        if minutes_ago is not None:
+                            break
 
-                if parent:
-                    parent_text = parent.get_text(
-                        " ",
-                        strip=True,
-                    )
-                    minutes_ago = _relative_time_to_minutes(
-                        parent_text
-                    )
+                    parent_text = curr.get_text(" ", strip=True)
+                    minutes_ago = _relative_time_to_minutes(parent_text)
+                    if minutes_ago is not None:
+                        break
 
             # استبعاد الرابط إن لم نتمكن من تحديد توقيته الصريح
             if minutes_ago is None:
